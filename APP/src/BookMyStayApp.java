@@ -1,8 +1,8 @@
 import java.util.*;
 
-// Custom Exception for Invalid Booking
-class InvalidBookingException extends Exception {
-    public InvalidBookingException(String message) {
+// Custom Exception
+class BookingException extends Exception {
+    public BookingException(String message) {
         super(message);
     }
 }
@@ -12,103 +12,144 @@ class Reservation {
     private String reservationId;
     private String guestName;
     private String roomType;
-    private int nights;
+    private String roomId;
+    private boolean isActive;
 
-    public Reservation(String reservationId, String guestName, String roomType, int nights) {
+    public Reservation(String reservationId, String guestName, String roomType, String roomId) {
         this.reservationId = reservationId;
         this.guestName = guestName;
         this.roomType = roomType;
-        this.nights = nights;
+        this.roomId = roomId;
+        this.isActive = true;
+    }
+
+    public String getReservationId() { return reservationId; }
+    public String getRoomType() { return roomType; }
+    public String getRoomId() { return roomId; }
+    public boolean isActive() { return isActive; }
+
+    public void cancel() {
+        this.isActive = false;
     }
 
     @Override
     public String toString() {
         return "Reservation ID: " + reservationId +
                 ", Guest: " + guestName +
-                ", Room: " + roomType +
-                ", Nights: " + nights;
+                ", RoomType: " + roomType +
+                ", RoomID: " + roomId +
+                ", Status: " + (isActive ? "CONFIRMED" : "CANCELLED");
     }
 }
 
-// Inventory Manager (Guarding System State)
+// Inventory Manager
 class RoomInventory {
     private Map<String, Integer> inventory;
+    private Map<String, Stack<String>> availableRooms;
 
     public RoomInventory() {
         inventory = new HashMap<>();
+        availableRooms = new HashMap<>();
+
+        // Initialize
         inventory.put("Standard", 2);
         inventory.put("Deluxe", 2);
-        inventory.put("Suite", 1);
+
+        availableRooms.put("Standard", new Stack<>());
+        availableRooms.put("Deluxe", new Stack<>());
+
+        // Add Room IDs
+        availableRooms.get("Standard").push("S1");
+        availableRooms.get("Standard").push("S2");
+
+        availableRooms.get("Deluxe").push("D1");
+        availableRooms.get("Deluxe").push("D2");
     }
 
-    public boolean isRoomTypeValid(String roomType) {
-        return inventory.containsKey(roomType);
-    }
-
-    public int getAvailableRooms(String roomType) {
-        return inventory.getOrDefault(roomType, 0);
-    }
-
-    public void bookRoom(String roomType) throws InvalidBookingException {
-        int available = getAvailableRooms(roomType);
-
-        if (available <= 0) {
-            throw new InvalidBookingException("No available rooms for type: " + roomType);
+    public String allocateRoom(String roomType) throws BookingException {
+        if (!availableRooms.containsKey(roomType)) {
+            throw new BookingException("Invalid room type.");
         }
 
-        inventory.put(roomType, available - 1);
+        Stack<String> rooms = availableRooms.get(roomType);
+
+        if (rooms.isEmpty()) {
+            throw new BookingException("No rooms available.");
+        }
+
+        inventory.put(roomType, inventory.get(roomType) - 1);
+        return rooms.pop(); // LIFO allocation
+    }
+
+    public void releaseRoom(String roomType, String roomId) {
+        availableRooms.get(roomType).push(roomId); // rollback using stack
+        inventory.put(roomType, inventory.get(roomType) + 1);
     }
 
     public void displayInventory() {
-        System.out.println("Current Inventory: " + inventory);
-    }
-}
-
-// Validator (Fail-Fast)
-class BookingValidator {
-
-    public void validate(String guestName, String roomType, int nights, RoomInventory inventory)
-            throws InvalidBookingException {
-
-        if (guestName == null || guestName.trim().isEmpty()) {
-            throw new InvalidBookingException("Guest name cannot be empty.");
-        }
-
-        if (!inventory.isRoomTypeValid(roomType)) {
-            throw new InvalidBookingException("Invalid room type selected.");
-        }
-
-        if (nights <= 0) {
-            throw new InvalidBookingException("Number of nights must be greater than 0.");
-        }
-
-        if (inventory.getAvailableRooms(roomType) <= 0) {
-            throw new InvalidBookingException("Selected room type is fully booked.");
-        }
+        System.out.println("Inventory: " + inventory);
     }
 }
 
 // Booking Service
 class BookingService {
     private RoomInventory inventory;
-    private BookingValidator validator;
+    private Map<String, Reservation> reservations;
 
     public BookingService(RoomInventory inventory) {
         this.inventory = inventory;
-        this.validator = new BookingValidator();
+        this.reservations = new HashMap<>();
     }
 
-    public Reservation createBooking(String reservationId, String guestName,
-                                     String roomType, int nights)
-            throws InvalidBookingException {
+    public Reservation createBooking(String id, String guest, String roomType)
+            throws BookingException {
 
-        // Validate first (Fail-Fast)
-        validator.validate(guestName, roomType, nights, inventory);
+        String roomId = inventory.allocateRoom(roomType);
+        Reservation res = new Reservation(id, guest, roomType, roomId);
+        reservations.put(id, res);
 
-        // Only update state AFTER validation
-        inventory.bookRoom(roomType);
+        return res;
+    }
 
-        return new Reservation(reservationId, guestName, roomType, nights);
+    public Reservation getReservation(String id) {
+        return reservations.get(id);
+    }
+}
+
+// Cancellation Service (Rollback Logic)
+class CancellationService {
+    private BookingService bookingService;
+    private RoomInventory inventory;
+
+    public CancellationService(BookingService bookingService, RoomInventory inventory) {
+        this.bookingService = bookingService;
+        this.inventory = inventory;
+    }
+
+    public void cancelBooking(String reservationId) throws BookingException {
+
+        Reservation res = bookingService.getReservation(reservationId);
+
+        // Validation
+        if (res == null) {
+            throw new BookingException("Reservation does not exist.");
+        }
+
+        if (!res.isActive()) {
+            throw new BookingException("Booking already cancelled.");
+        }
+
+        // Rollback sequence (controlled mutation)
+        String roomType = res.getRoomType();
+        String roomId = res.getRoomId();
+
+        // 1. Release room (LIFO rollback)
+        inventory.releaseRoom(roomType, roomId);
+
+        // 2. Update booking state
+        res.cancel();
+
+        System.out.println("Cancellation successful for: " + reservationId);
     }
 }
 
@@ -119,39 +160,33 @@ public class BookMyStayApp {
 
         RoomInventory inventory = new RoomInventory();
         BookingService bookingService = new BookingService(inventory);
+        CancellationService cancellationService =
+                new CancellationService(bookingService, inventory);
 
-        // Test cases (Valid + Invalid)
-        String[][] testCases = {
-                {"RES201", "Arun", "Deluxe", "2"},
-                {"RES202", "", "Suite", "1"},           // Invalid guest name
-                {"RES203", "Priya", "Luxury", "1"},     // Invalid room type
-                {"RES204", "Karthik", "Standard", "0"}, // Invalid nights
-                {"RES205", "Divya", "Suite", "1"},      // Valid
-                {"RES206", "Rahul", "Suite", "1"}       // No availability
-        };
+        try {
+            // Create bookings
+            Reservation r1 = bookingService.createBooking("RES301", "Arun", "Standard");
+            Reservation r2 = bookingService.createBooking("RES302", "Priya", "Deluxe");
 
-        for (String[] test : testCases) {
-            try {
-                System.out.println("\nProcessing Booking: " + test[0]);
-
-                Reservation res = bookingService.createBooking(
-                        test[0],
-                        test[1],
-                        test[2],
-                        Integer.parseInt(test[3])
-                );
-
-                System.out.println("Booking Successful: " + res);
-
-            } catch (InvalidBookingException e) {
-                // Graceful failure handling
-                System.out.println("Booking Failed: " + e.getMessage());
-            } catch (Exception e) {
-                System.out.println("Unexpected Error: " + e.getMessage());
-            }
-
-            // System continues running safely
+            System.out.println(r1);
+            System.out.println(r2);
             inventory.displayInventory();
+
+            // Cancel booking
+            System.out.println("\nCancelling RES301...");
+            cancellationService.cancelBooking("RES301");
+            inventory.displayInventory();
+
+            // Try invalid cancellation
+            System.out.println("\nCancelling RES301 again...");
+            cancellationService.cancelBooking("RES301");
+
+        } catch (BookingException e) {
+            System.out.println("Error: " + e.getMessage());
         }
+
+        // System continues safely
+        System.out.println("\nFinal System State:");
+        inventory.displayInventory();
     }
 }
